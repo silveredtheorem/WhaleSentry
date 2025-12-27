@@ -1,5 +1,5 @@
 {
-  "name": "whale-watcher-backend",
+  "name": "whale-sentry-3000-backend",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {

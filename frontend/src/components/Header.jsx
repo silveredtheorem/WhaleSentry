@@ -6,7 +6,7 @@ export default function Header({ bitcoinInfo, socketConnected, binanceConnected 
       <div className="flex items-center gap-4">
         {bitcoinInfo && <img src={bitcoinInfo.logo} alt="BTC" className="w-12 h-12" />}
         <div>
-          <h1 className="text-3xl font-semibold">🐋 Whale Watcher</h1>
+          <h1 className="text-3xl font-semibold">🐋 Whale Sentry 3000</h1>
           <p className="text-gray-400 text-sm">Real-Time BTC/USDT trade detection</p>
         </div>
       </div>
