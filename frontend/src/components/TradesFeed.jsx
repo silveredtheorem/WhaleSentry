@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatUSD } from '../utils/formatters'
+import { filterByPair } from '../utils/pairMatcher'
 
 const DEFAULT_RANGES = [
   { key: 'large', label: 'Large (>$100k)', min: 100000 },
@@ -7,7 +8,7 @@ const DEFAULT_RANGES = [
   { key: 'small', label: 'Small (<$10k)', max: 10000 }
 ]
 
-export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal = 2000, ranges = DEFAULT_RANGES, pairFilter = null }) {
+export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal = 2000, ranges = DEFAULT_RANGES, pairFilter = null, coinA = null, coinB = null }) {
   const [collapsed, setCollapsed] = useState({})
   const refs = useRef({})
 
@@ -18,7 +19,11 @@ export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal =
   const latest = useMemo(() => {
     const buffer = Math.max(maxTotal, maxPerSection * ranges.length * 2)
     let filtered = trades
-    if (pairFilter) {
+    
+    if (coinA && coinB) {
+      // filter by exact coin pair
+      filtered = filterByPair(trades, coinA, coinB)
+    } else if (pairFilter) {
       if (Array.isArray(pairFilter)) {
         const set = new Set(pairFilter.map(p => String(p).toUpperCase()))
         filtered = trades.filter(t => t.pair && set.has(String(t.pair).toUpperCase()))
@@ -26,8 +31,9 @@ export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal =
         filtered = trades.filter(t => t.pair === pairFilter)
       }
     }
+    
     return [...filtered].slice(-buffer).reverse()
-  }, [trades, maxTotal, maxPerSection, ranges.length, pairFilter])
+  }, [trades, maxTotal, maxPerSection, ranges.length, pairFilter, coinA, coinB])
 
   // categorize and limit per-section
   const categorized = useMemo(() => {

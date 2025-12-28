@@ -4,13 +4,18 @@ const socketIO = require('socket.io');
 const path = require('path');
 const cors = require('cors');
 
-const { connect } = require('./services/binanceStream');
+const { connect, setWindowMs, getWindowMs } = require('./services/binanceStream');
 const { WHALE_THRESHOLDS } = require('./services/whaleDetector');
 
-// default list of commonly traded USDT pairs (can be overridden by PAIRS env var)
+// default list of commonly traded pairs (can be overridden by PAIRS env var)
 const DEFAULT_PAIRS = [
+  // USDT pairs
   'btcusdt','ethusdt','bnbusdt','adausdt','xrpusdt','dogeusdt','solusdt','dotusdt','ltcusdt','bchusdt',
-  'maticusdt','linkusdt','trxusdt','atomusdt','avaxusdt','ftmusdt','vetusdt','eosusdt','nearusdt','xlmusdt'
+  'maticusdt','linkusdt','trxusdt','atomusdt','avaxusdt','ftmusdt','vetusdt','eosusdt','nearusdt','xlmusdt',
+  // BTC pairs
+  'ethbtc','bnbbtc','xrpbtc','ltcbtc','bchbtc','dotbtc','linkbtc',
+  // ETH pairs
+  'bnbeth','xrpeth','ltceth','linketh','adaeth'
 ]
 
 const PAIRS = (process.env.PAIRS && process.env.PAIRS.trim().length > 0)
@@ -36,6 +41,18 @@ app.get('/api/recent-trades', (req, res) => {
 
 app.get('/api/thresholds', (req, res) => {
   res.json(WHALE_THRESHOLDS);
+});
+
+app.get('/api/detection-window', (req, res) => {
+  res.json({ windowMs: getWindowMs() });
+});
+
+app.post('/api/detection-window', (req, res) => {
+  const { windowMs } = req.body || {};
+  if (windowMs == null) return res.status(400).json({ error: 'windowMs required' });
+  const newWindow = setWindowMs(windowMs);
+  io.emit('detection-window-updated', { windowMs: newWindow });
+  res.json({ windowMs: newWindow });
 });
 
 // test endpoint to emit a whale alert (useful for debugging)
@@ -66,8 +83,9 @@ app.get('/api/health', (req, res) => {
 io.on('connection', (socket) => {
   console.log('👤 Client connected');
   socket.emit('history', recentTrades.slice(-3600));
-  // send current thresholds to client
+  // send current thresholds and detection window to client
   socket.emit('thresholds', WHALE_THRESHOLDS);
+  socket.emit('detection-window', { windowMs: getWindowMs() });
 
   // allow clients to update thresholds (will broadcast to all clients)
   socket.on('set-thresholds', (newThresh) => {
@@ -80,6 +98,18 @@ io.on('connection', (socket) => {
       console.log('🔧 Thresholds updated', WHALE_THRESHOLDS);
     } catch (err) {
       console.error('Error updating thresholds', err);
+    }
+  });
+
+  // allow clients to update detection window
+  socket.on('set-detection-window', (payload) => {
+    try {
+      if (!payload || payload.windowMs == null) return;
+      const newWindow = setWindowMs(payload.windowMs);
+      io.emit('detection-window-updated', { windowMs: newWindow });
+      console.log('🔧 Detection window updated', newWindow);
+    } catch (err) {
+      console.error('Error updating detection window', err);
     }
   });
 

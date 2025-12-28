@@ -3,8 +3,19 @@ const { classify, WHALE_THRESHOLDS } = require('./whaleDetector');
 const { insertWhale } = require('./db');
 
 // Configurable sliding window for aggregated detection (ms)
-const WINDOW_MS = Number(process.env.AGG_WINDOW_MS) || 5000
+let WINDOW_MS = Number(process.env.AGG_WINDOW_MS) || 5000
 const MIN_EMIT_GAP_MS = Number(process.env.MIN_EMIT_GAP_MS) || 5000
+
+// Function to update window dynamically
+function setWindowMs(ms) {
+  WINDOW_MS = Math.max(1000, Math.min(60000, Number(ms) || 5000))
+  console.log(`⏱️  Whale detection window updated to ${WINDOW_MS}ms`)
+  return WINDOW_MS
+}
+
+function getWindowMs() {
+  return WINDOW_MS
+}
 
 // maintain ws per pair and recent buffers per pair
 const sockets = {}
@@ -209,4 +220,4 @@ function connect(io, recentTrades, MAX_HISTORY, pairs = ['btcusdt']) {
   })
 }
 
-module.exports = { connect }
+module.exports = { connect, setWindowMs, getWindowMs }

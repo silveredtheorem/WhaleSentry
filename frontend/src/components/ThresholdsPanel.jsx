@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { formatUSD } from '../utils/formatters'
 
-export default function ThresholdsPanel({ thresholds = {}, onChange }) {
+export default function ThresholdsPanel({ thresholds = {}, onThresholdChange }) {
   const [local, setLocal] = useState({
     DOLPHIN: thresholds.DOLPHIN || 200000,
     WHALE: thresholds.WHALE || 500000,
@@ -14,10 +14,10 @@ export default function ThresholdsPanel({ thresholds = {}, onChange }) {
     MEGALODON: thresholds.MEGALODON || local.MEGALODON
   }), [thresholds])
 
-  function update(key, value) {
+  function updateThreshold(key, value) {
     const v = Number(value)
     setLocal(prev => ({ ...prev, [key]: v }))
-    if (onChange) onChange({ ...local, [key]: v })
+    if (onThresholdChange) onThresholdChange({ ...local, [key]: v })
   }
 
   return (
@@ -30,7 +30,7 @@ export default function ThresholdsPanel({ thresholds = {}, onChange }) {
               <div className="text-sm font-medium">{key}</div>
               <div className="text-sm text-gray-300">{formatUSD(local[key])}</div>
             </div>
-            <input type="range" min="100" max="1000000" step="100" value={local[key]} onChange={e => update(key, e.target.value)} className="w-full" />
+            <input type="range" min="100" max="1000000" step="100" value={local[key]} onChange={e => updateThreshold(key, e.target.value)} className="w-full" />
           </div>
         ))}
       </div>
