@@ -3,9 +3,9 @@ import { formatUSD } from '../utils/formatters'
 
 export default function ThresholdsPanel({ thresholds = {}, onChange }) {
   const [local, setLocal] = useState({
-    DOLPHIN: thresholds.DOLPHIN || 1000,
-    WHALE: thresholds.WHALE || 10000,
-    MEGALODON: thresholds.MEGALODON || 50000
+    DOLPHIN: thresholds.DOLPHIN || 200000,
+    WHALE: thresholds.WHALE || 500000,
+    MEGALODON: thresholds.MEGALODON || 1000000
   })
 
   useEffect(() => setLocal({

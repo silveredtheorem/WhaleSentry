@@ -7,6 +7,16 @@ const cors = require('cors');
 const { connect } = require('./services/binanceStream');
 const { WHALE_THRESHOLDS } = require('./services/whaleDetector');
 
+// default list of commonly traded USDT pairs (can be overridden by PAIRS env var)
+const DEFAULT_PAIRS = [
+  'btcusdt','ethusdt','bnbusdt','adausdt','xrpusdt','dogeusdt','solusdt','dotusdt','ltcusdt','bchusdt',
+  'maticusdt','linkusdt','trxusdt','atomusdt','avaxusdt','ftmusdt','vetusdt','eosusdt','nearusdt','xlmusdt'
+]
+
+const PAIRS = (process.env.PAIRS && process.env.PAIRS.trim().length > 0)
+  ? process.env.PAIRS.split(',').map(p => p.trim()).filter(Boolean)
+  : DEFAULT_PAIRS
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, { cors: { origin: '*' } });
@@ -18,7 +28,7 @@ app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 const recentTrades = [];
 const MAX_HISTORY = 3600; // keep up to 1 hour of per-second data if needed
 
-connect(io, recentTrades, MAX_HISTORY);
+connect(io, recentTrades, MAX_HISTORY, PAIRS);
 
 app.get('/api/recent-trades', (req, res) => {
   res.json(recentTrades.slice(-3600));

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import io from 'socket.io-client'
 import axios from 'axios'
 
@@ -33,6 +33,12 @@ function App() {
   const [priceHistory, setPriceHistory] = useState([])
   const [trades, setTrades] = useState([]) // full trade objects
   const [whaleAlerts, setWhaleAlerts] = useState([])
+  const [pairs, setPairs] = useState([])
+  const [tokens, setTokens] = useState(['BTC', 'ETH', 'USDT', 'USDC', 'BNCH', 'ADA', 'XRP', 'SOL', 'DOT', 'LTC']) // default common tokens
+  const [coinA, setCoinA] = useState('BTC')
+  const [coinB, setCoinB] = useState('USDT')
+  const coinARef = useRef(null)
+  const coinBRef = useRef(null)
   const [toast, setToast] = useState(null)
   const [stats, setStats] = useState({ totalVolume: 0, whaleCount: 0 })
   const [bitcoinInfo, setBitcoinInfo] = useState(null)
@@ -70,20 +76,48 @@ function App() {
 
     socketRef.current.on('history', history => {
       setTrades(history)
-      setPriceHistory(history.map(t => ({ time: t.time, price: t.price })))
+    })
+
+    socketRef.current.on('pairs', (pList) => {
+      const arr = Array.isArray(pList) ? pList : [pList]
+      setPairs(arr)
+      // derive token symbols from pairs - order matters: check longest quotes first
+      const quoteCandidates = ['USDT','USDC','BUSD','TUSD','EUR','USD','BTC','ETH']
+      const tokensSet = new Set()
+      arr.forEach(p => {
+        const up = String(p).toUpperCase()
+        let found = false
+        for (const q of quoteCandidates) {
+          if (up.endsWith(q)) {
+            tokensSet.add(up.slice(0, up.length - q.length))
+            tokensSet.add(q)
+            found = true
+            break
+          }
+        }
+      })
+      const tokArr = Array.from(tokensSet).filter(Boolean).sort()
+      setTokens(tokArr)
+      // only update coins if not already set OR if current selection doesn't exist in new tokens
+      if (tokArr.length >= 2) {
+        setCoinA(curr => tokArr.includes(curr) ? curr : 'BTC')
+        setCoinB(curr => tokArr.includes(curr) ? curr : 'USDT')
+      }
     })
 
     socketRef.current.on('trade', trade => {
       msgCounter.current += 1
-      setCurrentPrice(trade.price)
       setTrades(prev => {
         const updated = [...prev, trade]
         return updated.slice(-3600 * 4)
       })
-      setPriceHistory(prev => {
-        const updated = [...prev, { time: trade.time, price: trade.price }]
-        return updated.slice(-3600)
-      })
+      // only update price if trade matches selected pair
+      if (coinARef.current && coinBRef.current) {
+        const candidates = [`${coinARef.current}${coinBRef.current}`.toUpperCase(), `${coinBRef.current}${coinARef.current}`.toUpperCase()]
+        if (trade.pair && candidates.includes(trade.pair.toUpperCase())) {
+          setCurrentPrice(trade.price)
+        }
+      }
     })
 
     socketRef.current.on('whale-alert', whale => {
@@ -118,6 +152,37 @@ function App() {
     }
   }, [])
 
+  // keep refs in sync with state
+  useEffect(() => { coinARef.current = coinA }, [coinA])
+  useEffect(() => { coinBRef.current = coinB }, [coinB])
+
+  // check if selected coins have any available pairs
+  const hasMatchingPairs = useCallback((a, b) => {
+    if (!a || !b || !pairs.length) return false
+    const upperA = String(a).toUpperCase()
+    const upperB = String(b).toUpperCase()
+    return pairs.some(p => {
+      const up = String(p).toUpperCase()
+      return (up.includes(upperA) || up.includes(upperB))
+    })
+  }, [pairs])
+
+  // recompute priceHistory when trades or selected coins change
+  useEffect(() => {
+    if (!coinA || !coinB) return
+    const upperA = String(coinA).toUpperCase()
+    const upperB = String(coinB).toUpperCase()
+    // filter trades where pair contains either selected coin
+    const fh = trades.filter(h => {
+      if (!h.pair) return false
+      const pairUpper = String(h.pair).toUpperCase()
+      return pairUpper.includes(upperA) || pairUpper.includes(upperB)
+    })
+    setPriceHistory(fh.map(t => ({ time: t.time, price: t.price })))
+    const latest = fh.length ? fh[fh.length - 1] : null
+    if (latest) setCurrentPrice(latest.price)
+  }, [trades, coinA, coinB])
+
   const updateThresholds = (newThresh) => {
     setThresholds(newThresh)
     if (socketRef.current && socketRef.current.connected) {
@@ -129,7 +194,7 @@ function App() {
     labels: priceHistory.map(t => t.time),
     datasets: [
       {
-        label: 'BTC Price',
+        label: coinA && coinB ? `${coinA}/${coinB}` : 'Price',
         data: priceHistory.map(t => t.price),
         borderColor: '#00d4ff',
         backgroundColor: 'rgba(0,212,255,0.08)',
@@ -144,10 +209,16 @@ function App() {
   }
 
   const timeframeMs = timeframe === '5m' ? 5*60*1000 : timeframe === '15m' ? 15*60*1000 : timeframe === '4h' ? 4*60*60*1000 : 60*60*1000
-  const vwap = computeVWAP(trades, timeframeMs)
-  const ad = accumulationDistribution(trades, timeframeMs)
+  // compute analytics from filtered trades (selected coin pair only)
+  const filteredForAnalytics = coinA && coinB ? trades.filter(h => {
+    if (!h.pair) return false
+    const pairUpper = String(h.pair).toUpperCase()
+    return pairUpper.includes(String(coinA).toUpperCase()) || pairUpper.includes(String(coinB).toUpperCase())
+  }) : trades
+  const vwap = computeVWAP(filteredForAnalytics, timeframeMs)
+  const ad = accumulationDistribution(filteredForAnalytics, timeframeMs)
   const aggInterval = timeframe === '5m' ? 5*1000 : timeframe === '15m' ? 15*1000 : timeframe === '4h' ? 60*1000 : 60*1000
-  const aggregatedSeries = aggregateByInterval(trades.slice(-10000), aggInterval)
+  const aggregatedSeries = aggregateByInterval(filteredForAnalytics.slice(-10000), aggInterval)
 
   return (
     <div className={`min-h-screen text-white p-6 ${localStorage.getItem('theme') === 'dark' ? 'theme-dark' : ''}`}>
@@ -203,7 +274,15 @@ function App() {
         </div>
 
         <div className="flex items-center gap-3 mb-4">
-          <div className="text-sm text-gray-300">Timeframe:</div>
+          <div className="text-sm text-gray-300">Coin A:</div>
+          <select value={coinA || ''} onChange={e => setCoinA(e.target.value)} className="bg-slate-900 p-2 rounded">
+            {tokens.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <div className="text-sm text-gray-300">Coin B:</div>
+          <select value={coinB || ''} onChange={e => setCoinB(e.target.value)} className="bg-slate-900 p-2 rounded">
+            {tokens.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <div className="text-sm text-gray-300 ml-auto">Timeframe:</div>
           <select value={timeframe} onChange={e => setTimeframe(e.target.value)} className="bg-slate-900 p-2 rounded">
             <option value="5m">5m</option>
             <option value="15m">15m</option>
@@ -231,7 +310,7 @@ function App() {
 
         <div className="grid md:grid-cols-3 gap-6">
             <div className="md:col-span-2">
-              <TradesFeed trades={trades} limit={80} />
+              <TradesFeed trades={trades} limit={80} pairFilter={coinA && coinB ? [coinA, coinB] : null} />
 
               <div className="bg-slate-800 rounded-xl p-6">
                 <h2 className="text-xl mb-4">🚨 Whale Alerts</h2>
@@ -239,9 +318,18 @@ function App() {
                   <p className="text-gray-400 text-center py-8">Monitoring for whales...</p>
                 ) : (
                   <div className="space-y-3 max-h-56 overflow-y-auto">
-                    {whaleAlerts.map(w => (
-                      <WhaleAlert key={w.id} whale={w} />
-                    ))}
+                    {(() => {
+                      if (!coinA || !coinB) return whaleAlerts.map(w => <WhaleAlert key={w.id} whale={w} />)
+                      const upperA = String(coinA).toUpperCase()
+                      const upperB = String(coinB).toUpperCase()
+                      return whaleAlerts.filter(w => {
+                        if (!w.pair) return false
+                        const pairUpper = String(w.pair).toUpperCase()
+                        return pairUpper.includes(upperA) || pairUpper.includes(upperB)
+                      }).map(w => (
+                        <WhaleAlert key={w.id} whale={w} />
+                      ))
+                    })()}
                   </div>
                 )}
               </div>
