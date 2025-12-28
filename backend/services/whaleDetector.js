@@ -1,8 +1,8 @@
 // Lightweight whale detection logic and thresholds
 const WHALE_THRESHOLDS = {
-  DOLPHIN: 1_000,      // $1K (testing-friendly)
-  WHALE: 10_000,       // $10K (adjusted for testing)
-  MEGALODON: 50_000    // $50K
+  DOLPHIN: 200_000,    // $200K
+  WHALE: 500_000,      // $500K
+  MEGALODON: 1_000_000 // $1M
 };
 
 function classify(value) {

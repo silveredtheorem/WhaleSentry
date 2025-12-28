@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatUSD } from '../utils/formatters'
+import { filterByPair } from '../utils/pairMatcher'
 
 const DEFAULT_RANGES = [
   { key: 'large', label: 'Large (>$100k)', min: 100000 },
@@ -7,7 +8,7 @@ const DEFAULT_RANGES = [
   { key: 'small', label: 'Small (<$10k)', max: 10000 }
 ]
 
-export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal = 2000, ranges = DEFAULT_RANGES }) {
+export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal = 2000, ranges = DEFAULT_RANGES, pairFilter = null, coinA = null, coinB = null }) {
   const [collapsed, setCollapsed] = useState({})
   const refs = useRef({})
 
@@ -17,8 +18,22 @@ export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal =
   // latest-first ordering, cap total buffered trades for performance
   const latest = useMemo(() => {
     const buffer = Math.max(maxTotal, maxPerSection * ranges.length * 2)
-    return [...trades].slice(-buffer).reverse()
-  }, [trades, maxTotal, maxPerSection, ranges.length])
+    let filtered = trades
+    
+    if (coinA && coinB) {
+      // filter by exact coin pair
+      filtered = filterByPair(trades, coinA, coinB)
+    } else if (pairFilter) {
+      if (Array.isArray(pairFilter)) {
+        const set = new Set(pairFilter.map(p => String(p).toUpperCase()))
+        filtered = trades.filter(t => t.pair && set.has(String(t.pair).toUpperCase()))
+      } else {
+        filtered = trades.filter(t => t.pair === pairFilter)
+      }
+    }
+    
+    return [...filtered].slice(-buffer).reverse()
+  }, [trades, maxTotal, maxPerSection, ranges.length, pairFilter, coinA, coinB])
 
   // categorize and limit per-section
   const categorized = useMemo(() => {
@@ -79,7 +94,7 @@ export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal =
                   <div className="flex items-center gap-3">
                     <div className={`px-2 py-1 rounded text-xs ${t.type === 'BUY' ? 'bg-green-700 text-green-100' : 'bg-red-700 text-red-100'}`}>{t.type}</div>
                     <div className="text-sm">
-                      <div className="font-medium">{Number(t.quantity).toFixed(4)} BTC</div>
+                      <div className="font-medium">{Number(t.quantity).toFixed(4)} {t.pair ? t.pair.replace('USDT','') : 'COIN'}</div>
                       <div className="text-xs text-gray-400">{t.time}</div>
                     </div>
                   </div>

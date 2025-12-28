@@ -11,7 +11,10 @@ export default function WhaleAlert({ whale }) {
           <div className="text-3xl">{emoji}</div>
           <div>
             <div className="text-lg font-bold neon">{formatUSD(whale.value)}</div>
-            <div className="text-sm text-gray-400">{Number(whale.quantity).toFixed(4)} BTC @ {formatUSD(whale.price)}</div>
+            <div className="text-sm text-gray-400">
+              {whale.tradeCount ? `${whale.tradeCount} trades • ` : ''}
+              {whale.quantity ? `${Number(whale.quantity).toFixed(4)} ${whale.pair ? whale.pair.replace('USDT','') : 'COIN'} @ ${formatUSD(whale.price)}` : whale.pair}
+            </div>
           </div>
         </div>
         <div className={`${whale.type === 'BUY' ? 'bg-green-600' : 'bg-red-600'} px-3 py-1 rounded`}>{whale.type}</div>
