@@ -1,39 +1,49 @@
-# Whale Watcher
+# Whale Sentry
 
-Real-time BTC/USDT whale detection system (backend + frontend).
+Real-time crypto whale trade detection dashboard. Streams live trade and order book data from Binance, applies rolling z-score and order book imbalance signals to flag large trades, and broadcasts alerts to connected clients via Socket.IO.
 
 ## Quick start
 
-Backend
-
 ```bash
-cd backend
-npm install
-npm start
+# Backend
+cd backend && npm install && npm start
+
+# Frontend (separate terminal)
+cd frontend && npm install && npm run dev
 ```
 
-Frontend (development)
+Open [http://localhost:5173](http://localhost:5173).
+
+Copy `.env.example` to `backend/.env` to customize thresholds, pairs, and window sizes.
+
+## Docker
 
 ```bash
-cd frontend
-npm install
-npm run dev
+docker compose up --build
 ```
 
-Open the frontend at the URL shown by Vite (usually http://localhost:5173).
+Frontend served at port 80, backend at port 3000.
 
-Notes
-- Backend connects to Binance WebSocket and emits `trade` and `whale-alert` events via Socket.IO.
-- Frontend displays price chart, alerts, and plays a short sound when whales are detected.
+## Features
 
-Polish & features added
-- VWAP overlay on chart
-- Multi-timeframe aggregation (5m,15m,1h,4h)
-- Performance panel: messages/sec, latency, uptime
-- Animated whale alerts with shake effect for >$5M trades
-- CSV export of whale alerts and leaderboard
-- Dark mode toggle (reload to apply)
+- Multi-pair Binance WebSocket streaming (trade + order book depth)
+- Three detection methods: static dollar threshold, rolling z-score (Welford's algorithm), composite z-score + order book imbalance
+- Smart pair selector — Coin B constrained to valid trading partners
+- Live price chart with VWAP overlay, trade feed, whale alert toasts, leaderboard
+- Exponential backoff reconnection with Socket.IO event replay for new clients
+- SQLite3 persistence with batch INSERT; historical query via `GET /api/whales`
+- Performance panel: queue depth, consumer lag, uptime
 
-Troubleshooting
-- If frontend cannot connect, ensure backend is running on port 3000 and CORS allowed.
-- If Binance WS isn't connecting, check network/firewall or API limits.
+## API
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/health` | Server, Binance connection, rolling stats, order book state |
+| `GET /api/whales` | Historical whale alerts (params: `pair`, `from`, `to`, `method`, `tier`, `limit`) |
+| `GET /api/thresholds` | Current detection thresholds |
+| `POST /api/thresholds` | Update thresholds live |
+| `POST /api/detection-window` | Update aggregation window |
+
+## Tech
+
+React · Vite · Tailwind CSS · Node.js · Express · Socket.IO · SQLite3 · WebSocket · Docker

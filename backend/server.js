@@ -4,7 +4,9 @@ const socketIO = require('socket.io');
 const path = require('path');
 const cors = require('cors');
 
-const { connect, setWindowMs, getWindowMs } = require('./services/binanceStream');
+const { connect, setWindowMs, getWindowMs, getQueueMetrics, getBinanceConnected } = require('./services/binanceStream');
+const { getAllStats, getZCutoff, getWindowSize, getMinSamples } = require('./services/rollingStats');
+const { getAllDepth, getDepthLevels } = require('./services/depthTracker');
 const { WHALE_THRESHOLDS } = require('./services/whaleDetector');
 
 // default list of commonly traded pairs (can be overridden by PAIRS env var)
@@ -76,14 +78,67 @@ app.post('/api/test-whale', (req, res) => {
   res.json({ ok: true, whaleAlert })
 })
 
+// Historical whale query — supports filtering by pair, time range, detection method,
+// and whale tier.  All parameters are optional; defaults to last 100 events.
+//
+// GET /api/whales?pair=BTCUSDT&from=1700000000000&to=1700003600000
+//                &method=zscore&tier=WHALE&limit=50
+app.get('/api/whales', (req, res) => {
+  const { getDb } = require('./services/db')
+  const db = getDb()
+  if (!db) return res.status(503).json({ error: 'DB not enabled (set ENABLE_DB=true)' })
+
+  const { pair, from, to, method, tier, limit = 100 } = req.query
+
+  const conditions = []
+  const params     = []
+
+  if (pair)   { conditions.push('pair = ?');            params.push(pair.toUpperCase()) }
+  if (from)   { conditions.push('timestamp >= ?');      params.push(Number(from)) }
+  if (to)     { conditions.push('timestamp <= ?');      params.push(Number(to)) }
+  if (method) { conditions.push('detectionMethod = ?'); params.push(method) }
+  if (tier)   { conditions.push('whaleType = ?');       params.push(tier.toUpperCase()) }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const sql   = `SELECT * FROM whales ${where} ORDER BY timestamp DESC LIMIT ?`
+  params.push(Math.min(Number(limit) || 100, 1000))
+
+  db.all(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message })
+    res.json({ count: rows.length, whales: rows })
+  })
+})
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', trades: recentTrades.length });
+  const queue = getQueueMetrics();
+  res.json({
+    status: 'ok',
+    trades: recentTrades.length,
+    queue: {
+      depth: queue.depth,
+      capacity: queue.capacity,
+      droppedCount: queue.droppedCount,
+      processedCount: queue.processedCount,
+      processingLagMs: queue.lastLagMs
+    },
+    rollingStats: {
+      windowSize: getWindowSize(),
+      minSamples: getMinSamples(),
+      zCutoff: getZCutoff(),
+      perSymbol: getAllStats()
+    },
+    orderBook: {
+      depthLevels: getDepthLevels(),
+      perSymbol: getAllDepth()
+    }
+  });
 });
 
 io.on('connection', (socket) => {
   console.log('👤 Client connected');
   socket.emit('history', recentTrades.slice(-3600));
-  // send current thresholds and detection window to client
+  socket.emit('pairs', PAIRS.map(p => p.toUpperCase()));
+  socket.emit('connection-status', { connected: getBinanceConnected() });
   socket.emit('thresholds', WHALE_THRESHOLDS);
   socket.emit('detection-window', { windowMs: getWindowMs() });
 

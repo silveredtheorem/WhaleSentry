@@ -1,223 +1,223 @@
-const WebSocket = require('ws');
-const { classify, WHALE_THRESHOLDS } = require('./whaleDetector');
-const { insertWhale } = require('./db');
+const WebSocket = require('ws')
+const { classify, classifyByZScore, classifyComposite } = require('./whaleDetector')
+const { update: updateStats, zScore } = require('./rollingStats')
+const { updateDepth, getImbalance } = require('./depthTracker')
+const { insertWhalesBatch } = require('./db')
+const { TradeQueue } = require('./tradeQueue')
 
-// Configurable sliding window for aggregated detection (ms)
 let WINDOW_MS = Number(process.env.AGG_WINDOW_MS) || 5000
-const MIN_EMIT_GAP_MS = Number(process.env.MIN_EMIT_GAP_MS) || 5000
+const MIN_EMIT_GAP_MS    = Number(process.env.MIN_EMIT_GAP_MS)            || 5000
+const CONSUMER_INTERVAL_MS = Number(process.env.TRADE_CONSUMER_INTERVAL_MS) || 50
 
-// Function to update window dynamically
 function setWindowMs(ms) {
   WINDOW_MS = Math.max(1000, Math.min(60000, Number(ms) || 5000))
-  console.log(`⏱️  Whale detection window updated to ${WINDOW_MS}ms`)
+  console.log(`⏱️  Detection window → ${WINDOW_MS}ms`)
   return WINDOW_MS
 }
+function getWindowMs() { return WINDOW_MS }
 
-function getWindowMs() {
-  return WINDOW_MS
+const buffers = {}  // pair → [{ value, timestamp, price, quantity, type }]
+const lastEmit = {} // pair → timestamp of last aggregated alert
+
+const queue = new TradeQueue()
+let consumerStarted = false
+let _binanceConnected = false
+
+function getQueueMetrics()    { return queue.getMetrics() }
+function getBinanceConnected() { return _binanceConnected }
+
+// Exponential backoff with full jitter.
+// delay(0)=1s±0.5s, delay(1)=2s±1s, … capped at 30s.
+// Full jitter (random in [0, computed_cap]) prevents thundering-herd
+// when many clients reconnect simultaneously after a service outage.
+function _backoffMs(attempt) {
+  const cap = Math.min(30_000, 1_000 * Math.pow(2, attempt))
+  return Math.random() * cap
 }
 
-// maintain ws per pair and recent buffers per pair
-const sockets = {}
-const buffers = {} // pair -> [{ value, timestamp, price, quantity, type }]
-const lastEmit = {} // pair -> timestamp
+function _safePair(p) { return String(p || '').toLowerCase() }
 
-function pairStreamUrl(pair) {
-  // pair should be lowercase like btcusdt
-  return `wss://stream.binance.com:9443/ws/${pair}@trade`
-}
+function startConsumer(io, recentTrades, MAX_HISTORY) {
+  if (consumerStarted) return
+  consumerStarted = true
 
-function _safePairName(p) {
-  return String(p || '').toLowerCase()
-}
+  setInterval(async () => {
+    const items = queue.drainAll()
+    if (!items.length) return
 
-function connect(io, recentTrades, MAX_HISTORY, pairs = ['btcusdt']) {
-  const list = Array.isArray(pairs) && pairs.length ? Array.from(new Set(pairs.map(p => _safePairName(p)))) : ['btcusdt']
+    const whaleBatch = []
+    let totalLag = 0
 
-  // initialize buffers & lastEmit for all pairs
-  list.forEach(p => { buffers[p] = buffers[p] || []; lastEmit[p] = lastEmit[p] || 0 })
+    for (const item of items) {
+      totalLag += Date.now() - item._enqueuedAt
 
-  // if many pairs, prefer combined stream to reduce connections
-  const useCombined = list.length > 1
-  if (useCombined) {
-    const streams = list.map(p => `${p}@trade`).join('/')
-    const url = `wss://stream.binance.com:9443/stream?streams=${streams}`
-    const ws = new WebSocket(url)
-    sockets.combined = ws
-
-    ws.on('open', () => {
-      console.log(`✅ Connected to Binance combined stream for ${list.length} pairs`)
-      io.emit('connection-status', { connected: true })
-      io.emit('pairs', list.map(p => p.toUpperCase()))
-    })
-
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data)
-        // combined stream structure: { stream: 'btcusdt@trade', data: { ... } }
-        const trade = msg.data || msg
-        const streamName = msg.stream || null
-        const pair = streamName ? streamName.split('@')[0] : null
-        if (!trade || !pair) return
-
-        const price = parseFloat(trade.p)
-        const quantity = parseFloat(trade.q)
-        const value = price * quantity
-        const timestamp = trade.T
-        const isBuy = !trade.m
-
-        const tradeData = {
-          pair: pair.toUpperCase(),
-          price,
-          quantity,
-          value,
-          timestamp,
-          type: isBuy ? 'BUY' : 'SELL',
-          time: new Date(timestamp).toLocaleTimeString()
-        }
-
-        recentTrades.push(tradeData)
-        if (recentTrades.length > MAX_HISTORY) recentTrades.shift()
-
-        const buf = buffers[pair] || (buffers[pair] = [])
-        buf.push({ value, timestamp, price, quantity, type: tradeData.type })
-        const cutoff = Date.now() - WINDOW_MS
-        while (buf.length && buf[0].timestamp < cutoff) buf.shift()
-
-        io.emit('trade', tradeData)
-
-        const indivType = classify(value)
-        if (indivType) {
-          const whaleAlert = { ...tradeData, whaleType: indivType, id: `${timestamp}-${Math.random()}` }
-          io.emit('whale-alert', whaleAlert)
-          insertWhale({ ...whaleAlert }).catch(err => console.error('DB insert error', err))
-        }
-
-        const totalValue = buf.reduce((s, x) => s + (x.value || 0), 0)
-        const tradeCount = buf.length
-        const aggType = classify(totalValue)
-        if (aggType && (Date.now() - (lastEmit[pair] || 0) > MIN_EMIT_GAP_MS)) {
-          const aggAlert = {
-            id: `${Date.now()}-agg-${Math.random()}`,
-            pair: pair.toUpperCase(),
-            price: price,
-            quantity: null,
-            value: totalValue,
-            totalValue,
-            tradeCount,
-            timestamp: Date.now(),
-            whaleType: aggType,
-            type: 'AGGREGATED',
-            time: new Date().toLocaleTimeString()
-          }
-          lastEmit[pair] = Date.now()
-          io.emit('whale-alert', aggAlert)
-          insertWhale({ ...aggAlert }).catch(err => console.error('DB insert error', err))
-        }
-
-      } catch (err) {
-        console.error('Error parsing Binance combined message', err)
-      }
-    })
-
-    ws.on('error', (err) => {
-      console.error('❌ Binance combined WebSocket error:', err && err.message ? err.message : err)
-      io.emit('connection-status', { connected: false, error: err && err.message })
-    })
-
-    ws.on('close', () => {
-      console.log('🔌 Binance combined WebSocket closed — reconnecting in 5s')
-      io.emit('connection-status', { connected: false })
-      setTimeout(() => connect(io, recentTrades, MAX_HISTORY, list), 5000)
-    })
-
-    return
-  }
-
-  // fallback: single pair
-  const pair = list[0]
-  const ws = new WebSocket(pairStreamUrl(pair))
-  sockets[pair] = ws
-
-  ws.on('open', () => {
-    console.log(`✅ Connected to Binance stream for ${pair}`)
-    io.emit('connection-status', { connected: true })
-    io.emit('pairs', list.map(p => p.toUpperCase()))
-  })
-
-  ws.on('message', (data) => {
-    try {
-      const trade = JSON.parse(data)
-      const price = parseFloat(trade.p)
-      const quantity = parseFloat(trade.q)
-      const value = price * quantity
-      const timestamp = trade.T
-      const isBuy = !trade.m
+      const { pair, price, quantity, value, timestamp, type } = item
 
       const tradeData = {
         pair: pair.toUpperCase(),
-        price,
-        quantity,
-        value,
-        timestamp,
-        type: isBuy ? 'BUY' : 'SELL',
+        price, quantity, value, timestamp, type,
         time: new Date(timestamp).toLocaleTimeString()
       }
 
       recentTrades.push(tradeData)
       if (recentTrades.length > MAX_HISTORY) recentTrades.shift()
 
-      const buf = buffers[pair]
-      buf.push({ value, timestamp, price, quantity, type: tradeData.type })
+      const buf = buffers[pair] || (buffers[pair] = [])
+      buf.push({ value, timestamp, price, quantity, type })
       const cutoff = Date.now() - WINDOW_MS
       while (buf.length && buf[0].timestamp < cutoff) buf.shift()
 
       io.emit('trade', tradeData)
 
-      const indivType = classify(value)
-      if (indivType) {
-        const whaleAlert = { ...tradeData, whaleType: indivType, id: `${timestamp}-${Math.random()}` }
-        io.emit('whale-alert', whaleAlert)
-        insertWhale({ ...whaleAlert }).catch(err => console.error('DB insert error', err))
+      // --- z-score detection (per-symbol rolling stats, Welford's algorithm) ---
+      updateStats(pair, value)
+      const z = zScore(pair, value)
+      const zResult = classifyByZScore(value, z)
+      if (zResult) {
+        const alert = {
+          ...tradeData,
+          whaleType: zResult.whaleType,
+          zScore: zResult.zScore,
+          detectionMethod: 'zscore',
+          id: `${timestamp}-z-${Math.random()}`
+        }
+        io.emit('whale-alert', alert)
+        whaleBatch.push(alert)
       }
 
-      const totalValue = buf.reduce((s, x) => s + (x.value || 0), 0)
-      const tradeCount = buf.length
+      // --- composite signal (z-score + order book imbalance direction check) ---
+      const imbalance = getImbalance(pair)
+      const composite = classifyComposite(value, z, imbalance, type)
+      if (composite) {
+        const alert = {
+          ...tradeData,
+          whaleType: composite.whaleType,
+          zScore: composite.zScore,
+          imbalance: composite.imbalance,
+          detectionMethod: 'composite',
+          id: `${timestamp}-c-${Math.random()}`
+        }
+        io.emit('whale-alert', alert)
+        whaleBatch.push(alert)
+      }
+
+      // --- static threshold (kept as reference / fallback) ---
+      const staticType = classify(value)
+      if (staticType) {
+        const alert = {
+          ...tradeData,
+          whaleType: staticType,
+          zScore: z,
+          detectionMethod: 'static',
+          id: `${timestamp}-s-${Math.random()}`
+        }
+        io.emit('whale-alert', alert)
+        whaleBatch.push(alert)
+      }
+
+      // --- aggregated-window detection ---
+      const totalValue = buf.reduce((s, x) => s + x.value, 0)
       const aggType = classify(totalValue)
-      if (aggType && (Date.now() - (lastEmit[pair] || 0) > MIN_EMIT_GAP_MS)) {
-        const aggAlert = {
+      if (aggType && Date.now() - (lastEmit[pair] || 0) > MIN_EMIT_GAP_MS) {
+        const alert = {
           id: `${Date.now()}-agg-${Math.random()}`,
           pair: pair.toUpperCase(),
-          price: price,
-          quantity: null,
-          value: totalValue,
-          totalValue,
-          tradeCount,
+          price, quantity: null,
+          value: totalValue, totalValue,
+          tradeCount: buf.length,
           timestamp: Date.now(),
           whaleType: aggType,
           type: 'AGGREGATED',
+          detectionMethod: 'aggregated',
           time: new Date().toLocaleTimeString()
         }
         lastEmit[pair] = Date.now()
-        io.emit('whale-alert', aggAlert)
-        insertWhale({ ...aggAlert }).catch(err => console.error('DB insert error', err))
+        io.emit('whale-alert', alert)
+        whaleBatch.push(alert)
       }
-
-    } catch (err) {
-      console.error('Error parsing Binance message', err)
     }
-  })
 
-  ws.on('error', (err) => {
-    console.error('❌ Binance WebSocket error:', err && err.message ? err.message : err)
-    io.emit('connection-status', { connected: false, error: err && err.message })
-  })
+    queue.recordProcessed(items.length, Math.round(totalLag / items.length))
 
-  ws.on('close', () => {
-    console.log('🔌 Binance WebSocket closed — reconnecting in 5s')
-    io.emit('connection-status', { connected: false })
-    setTimeout(() => connect(io, recentTrades, MAX_HISTORY, [pair]), 5000)
-  })
+    if (whaleBatch.length) {
+      try { await insertWhalesBatch(whaleBatch) }
+      catch (err) { console.error('DB batch insert error', err) }
+    }
+  }, CONSUMER_INTERVAL_MS)
 }
 
-module.exports = { connect, setWindowMs, getWindowMs }
+function connect(io, recentTrades, MAX_HISTORY, pairs = ['btcusdt']) {
+  const list = Array.isArray(pairs) && pairs.length
+    ? Array.from(new Set(pairs.map(_safePair)))
+    : ['btcusdt']
+
+  list.forEach(p => { buffers[p] = buffers[p] || []; lastEmit[p] = lastEmit[p] || 0 })
+  startConsumer(io, recentTrades, MAX_HISTORY)
+
+  // attempt lives in this closure so it persists across reconnects without
+  // being a parameter (which would reset to 0 on every reconnect call).
+  let attempt = 0
+
+  function _connect() {
+    const tradeStreams = list.map(p => `${p}@trade`)
+    const depthStreams = list.map(p => `${p}@depth5`)
+    const url = list.length > 1
+      ? `wss://stream.binance.com:9443/stream?streams=${[...tradeStreams, ...depthStreams].join('/')}`
+      : `wss://stream.binance.com:9443/ws/${list[0]}@trade`
+
+    const ws = new WebSocket(url)
+
+    ws.on('open', () => {
+      console.log(`✅ Binance stream connected (${list.length} pairs, attempt ${attempt})`)
+      attempt = 0   // reset so the next disconnect starts from a short delay
+      _binanceConnected = true
+      io.emit('connection-status', { connected: true })
+      io.emit('pairs', list.map(p => p.toUpperCase()))
+    })
+
+    ws.on('message', (data) => {
+      try {
+        const msg        = JSON.parse(data)
+        const streamName = msg.stream || null
+        const payload    = msg.data || msg
+        const [pair, streamType] = streamName
+          ? streamName.split('@')
+          : [list[0], 'trade']
+
+        if (streamType === 'trade') {
+          const price    = parseFloat(payload.p)
+          const quantity = parseFloat(payload.q)
+          queue.enqueue({
+            pair, price, quantity,
+            value: price * quantity,
+            timestamp: payload.T,
+            type: payload.m ? 'SELL' : 'BUY'
+          })
+        } else if (streamType === 'depth5') {
+          updateDepth(pair, payload.bids, payload.asks)
+        }
+      } catch (err) {
+        console.error('Stream parse error', err)
+      }
+    })
+
+    ws.on('error', (err) => {
+      console.error('❌ Binance WS error:', err && err.message)
+      _binanceConnected = false
+      io.emit('connection-status', { connected: false })
+    })
+
+    ws.on('close', () => {
+      _binanceConnected = false
+      io.emit('connection-status', { connected: false })
+      const delay = _backoffMs(attempt)
+      console.log(`🔌 Binance WS closed — reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${attempt + 1})`)
+      attempt++
+      setTimeout(_connect, delay)
+    })
+  }
+
+  _connect()
+}
+
+module.exports = { connect, setWindowMs, getWindowMs, getQueueMetrics, getBinanceConnected }

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatUSD } from '../utils/formatters'
-import { filterByPair } from '../utils/pairMatcher'
+import { filterByPair, splitPairSymbol } from '../utils/pairMatcher'
 
 const DEFAULT_RANGES = [
   { key: 'large', label: 'Large (>$100k)', min: 100000 },
@@ -69,38 +69,36 @@ export default function TradesFeed({ trades = [], maxPerSection = 50, maxTotal =
   }, [latest, ranges])
 
   return (
-    <div className="bg-slate-800 rounded-xl p-4 mb-6">
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg">Live Trades</h3>
-        <div className="text-sm text-gray-400">Showing latest on top</div>
+        <h2 className="text-lg font-semibold">Live Trades</h2>
+        <div className="text-xs text-slate-500 dark:text-gray-500">Showing latest on top</div>
       </div>
 
       {ranges.map(r => (
-        <section key={r.key} className="mt-4">
+        <section key={r.key} className="mt-4 first:mt-5">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-sm font-medium">{r.label} <span className="text-xs text-gray-400">({categorized[r.key]?.length || 0})</span></div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setCollapsed(prev => ({ ...prev, [r.key]: !prev[r.key] }))} className="text-xs px-2 py-1 bg-slate-900 rounded">{collapsed[r.key] ? 'Expand' : 'Collapse'}</button>
-            </div>
+            <div className="text-sm font-medium text-slate-600 dark:text-gray-300">{r.label} <span className="text-xs text-slate-500 dark:text-gray-500">({categorized[r.key]?.length || 0})</span></div>
+            <button onClick={() => setCollapsed(prev => ({ ...prev, [r.key]: !prev[r.key] }))} className="text-xs px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">{collapsed[r.key] ? 'Expand' : 'Collapse'}</button>
           </div>
 
           {!collapsed[r.key] && (
-            <ul ref={refs.current[r.key]} className="space-y-2 max-h-44 overflow-y-auto">
+            <ul ref={refs.current[r.key]} className="space-y-1 max-h-44 overflow-y-auto">
               {categorized[r.key] && categorized[r.key].length === 0 && (
-                <li className="text-xs text-gray-400">No trades in this range</li>
+                <li className="text-xs text-slate-500 dark:text-gray-500 px-2 py-2">No trades in this range</li>
               )}
               {categorized[r.key] && categorized[r.key].map(t => (
-                <li key={`${t.timestamp}-${t.price}-${t.quantity}-${Math.random()}`} className="flex justify-between items-center p-2 rounded hover:bg-slate-900">
+                <li key={`${t.timestamp}-${t.price}-${t.quantity}-${Math.random()}`} className="flex justify-between items-center p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className={`px-2 py-1 rounded text-xs ${t.type === 'BUY' ? 'bg-green-700 text-green-100' : 'bg-red-700 text-red-100'}`}>{t.type}</div>
+                    <div className={`px-2 py-1 rounded text-xs font-medium ${t.type === 'BUY' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-700/40 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-700/40 dark:text-red-300'}`}>{t.type}</div>
                     <div className="text-sm">
-                      <div className="font-medium">{Number(t.quantity).toFixed(4)} {t.pair ? t.pair.replace('USDT','') : 'COIN'}</div>
-                      <div className="text-xs text-gray-400">{t.time}</div>
+                      <div className="font-medium">{Number(t.quantity).toFixed(4)} {t.pair ? (splitPairSymbol(t.pair)?.base ?? t.pair) : 'COIN'}</div>
+                      <div className="text-xs text-slate-500 dark:text-gray-500">{t.time}</div>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-semibold">{formatUSD(t.price)}</div>
-                    <div className="text-xs text-gray-400">{formatUSD(t.value)}</div>
+                    <div className="font-semibold tabular-nums">{formatUSD(t.price)}</div>
+                    <div className="text-xs text-slate-500 dark:text-gray-500 tabular-nums">{formatUSD(t.value)}</div>
                   </div>
                 </li>
               ))}

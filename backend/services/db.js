@@ -18,8 +18,15 @@ if (ENABLE_DB) {
         whaleType TEXT,
         timestamp INTEGER,
         tradeCount INTEGER,
-        totalValue REAL
+        totalValue REAL,
+        zScore REAL,
+        detectionMethod TEXT,
+        imbalance REAL
       )`)
+      // Migrate existing DB if columns are missing (idempotent ALTER TABLE)
+      db.run(`ALTER TABLE whales ADD COLUMN zScore REAL`, () => {})
+      db.run(`ALTER TABLE whales ADD COLUMN detectionMethod TEXT`, () => {})
+      db.run(`ALTER TABLE whales ADD COLUMN imbalance REAL`, () => {})
     })
     console.log('✅ SQLite DB initialized at', dbPath)
   } catch (err) {
@@ -54,4 +61,36 @@ function insertWhale(obj) {
   })
 }
 
-module.exports = { insertWhale }
+function insertWhalesBatch(arr) {
+  if (!db || !arr || !arr.length) return Promise.resolve(false)
+  return new Promise((resolve, reject) => {
+    const placeholders = arr.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')
+    const sql = `INSERT OR REPLACE INTO whales (id,pair,price,quantity,value,type,whaleType,timestamp,tradeCount,totalValue,zScore,detectionMethod,imbalance) VALUES ${placeholders}`
+    const params = []
+    arr.forEach(obj => {
+      params.push(
+        obj.id,
+        obj.pair || null,
+        obj.price || 0,
+        obj.quantity || 0,
+        obj.value || 0,
+        obj.type || null,
+        obj.whaleType || null,
+        obj.timestamp || Date.now(),
+        obj.tradeCount || 1,
+        obj.totalValue || obj.value || 0,
+        obj.zScore ?? null,
+        obj.detectionMethod || null,
+        obj.imbalance ?? null
+      )
+    })
+    db.run(sql, params, function (err) {
+      if (err) return reject(err)
+      resolve(true)
+    })
+  })
+}
+
+function getDb() { return db }
+
+module.exports = { insertWhale, insertWhalesBatch, getDb }

@@ -2,15 +2,17 @@ import React, { useEffect, useRef, useState, useCallback } from 'react'
 import io from 'socket.io-client'
 import axios from 'axios'
 
-import Header from './components/Header'
 import StatsPanel from './components/StatsPanel'
 import PriceChart from './components/PriceChart'
 import WhaleAlert from './components/WhaleAlert'
 import Leaderboard from './components/Leaderboard'
 import TradesFeed from './components/TradesFeed'
+import Navbar from './components/Navbar'
+import Footer from './components/Footer'
+import InfoTip from './components/InfoTip'
 import { exportWhalesCSV } from './utils/csvExport'
 import { computeVWAP, accumulationDistribution, aggregateByInterval } from './utils/analytics'
-import { filterByPair, tradeMatchesPair } from './utils/pairMatcher'
+import { filterByPair, tradeMatchesPair, deriveTokensFromPairs, getValidPartnersFor, splitPairSymbol } from './utils/pairMatcher'
 import PerfPanel from './components/PerfPanel'
 import ThresholdsPanel from './components/ThresholdsPanel'
 import {
@@ -35,7 +37,7 @@ function App() {
   const [trades, setTrades] = useState([]) // full trade objects
   const [whaleAlerts, setWhaleAlerts] = useState([])
   const [pairs, setPairs] = useState([])
-  const [tokens, setTokens] = useState(['BTC', 'ETH', 'USDT', 'USDC', 'BNCH', 'ADA', 'XRP', 'SOL', 'DOT', 'LTC']) // default common tokens
+  const [tokens, setTokens] = useState(['BTC', 'ETH', 'USDT', 'USDC', 'BNB', 'ADA', 'XRP', 'SOL', 'DOT', 'LTC'])
   const [coinA, setCoinA] = useState('BTC')
   const [coinB, setCoinB] = useState('USDT')
   const coinARef = useRef(null)
@@ -58,6 +60,15 @@ function App() {
   const [detectionWindow, setDetectionWindow] = useState({ windowMs: 5000 })
   const msgCounter = useRef(0)
   const startedAt = useRef(Date.now())
+
+  // Dark mode is real React state, not a one-time localStorage read. Persisting
+  // happens in the effect below, so toggling re-renders immediately with no reload.
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark')
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+    localStorage.setItem('theme', darkMode ? 'dark' : 'light')
+  }, [darkMode])
 
   useEffect(() => {
     axios.get('https://api.coingecko.com/api/v3/coins/bitcoin')
@@ -85,32 +96,7 @@ function App() {
     socketRef.current.on('pairs', (pList) => {
       const arr = Array.isArray(pList) ? pList : [pList]
       setPairs(arr)
-      // derive token symbols from pairs - order matters: check longest quotes first
-      const quoteCandidates = ['USDT','USDC','BUSD','TUSD','DAI','USDE','EUR','GBP','USD','BTC','ETH']
-      const tokensSet = new Set()
-      arr.forEach(p => {
-        const up = String(p).toUpperCase()
-        let found = false
-        // Try matching quotes from longest to shortest
-        for (const q of quoteCandidates) {
-          if (up.endsWith(q)) {
-            const base = up.slice(0, up.length - q.length)
-            if (base.length > 0) { // ensure we have a base
-              tokensSet.add(base)
-              tokensSet.add(q)
-              found = true
-              break
-            }
-          }
-        }
-        // fallback: try splitting in middle if pair is even length
-        if (!found && up.length >= 4 && up.length % 2 === 0) {
-          const mid = up.length / 2
-          tokensSet.add(up.slice(0, mid))
-          tokensSet.add(up.slice(mid))
-        }
-      })
-      const tokArr = Array.from(tokensSet).filter(Boolean).sort()
+      const tokArr = deriveTokensFromPairs(arr)
       setTokens(tokArr)
       // only update coins if not already set OR if current selection doesn't exist in new tokens
       if (tokArr.length >= 2) {
@@ -172,16 +158,26 @@ function App() {
   useEffect(() => { coinARef.current = coinA }, [coinA])
   useEffect(() => { coinBRef.current = coinB }, [coinB])
 
-  // check if selected coins have any available pairs
-  const hasMatchingPairs = useCallback((a, b) => {
-    if (!a || !b || !pairs.length) return false
-    const upperA = String(a).toUpperCase()
-    const upperB = String(b).toUpperCase()
-    return pairs.some(p => {
-      const up = String(p).toUpperCase()
-      return (up.includes(upperA) || up.includes(upperB))
-    })
-  }, [pairs])
+  // when coinA changes and coinB is no longer a valid partner, pick the best available fallback
+  useEffect(() => {
+    if (!pairs.length) return
+    const partners = getValidPartnersFor(coinA, pairs)
+    if (!partners.includes(coinB)) {
+      const preferred = ['USDT', 'BTC', 'ETH'].find(q => partners.includes(q)) ?? partners[0] ?? ''
+      setCoinB(preferred)
+    }
+  }, [coinA, pairs])
+
+  // valid Coin B choices given current Coin A and streamed pairs list
+  const validCoinBOptions = pairs.length ? getValidPartnersFor(coinA, pairs) : tokens.filter(t => t !== coinA)
+
+  // true only when the selected A/B combo corresponds to a real streamed pair
+  const isPairValid = !pairs.length || pairs.some(p => {
+    const up = String(p).toUpperCase()
+    const a = String(coinA).toUpperCase()
+    const b = String(coinB).toUpperCase()
+    return up === a + b || up === b + a
+  })
 
   // recompute priceHistory when trades or selected coins change
   useEffect(() => {
@@ -233,80 +229,102 @@ function App() {
   const aggregatedSeries = aggregateByInterval(filteredForAnalytics.slice(-10000), aggInterval)
 
   return (
-    <div className={`min-h-screen text-white p-6 ${localStorage.getItem('theme') === 'dark' ? 'theme-dark' : ''}`}>
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white px-4 sm:px-6 pb-6">
       <audio ref={audioRef} src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" preload="auto" />
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <Header bitcoinInfo={bitcoinInfo} connected={connected} />
-          <div className="flex items-center gap-2">
-            <button onClick={() => { const t = localStorage.getItem('theme') === 'dark' ? '' : 'dark'; localStorage.setItem('theme', t); document.location.reload(); }} className="px-3 py-1 bg-slate-800 rounded">Toggle Dark</button>
-          </div>
-        </div>
 
+      <Navbar
+        bitcoinInfo={bitcoinInfo}
+        socketConnected={connected}
+        binanceConnected={binanceConnected}
+        darkMode={darkMode}
+        onToggleDarkMode={() => setDarkMode(d => !d)}
+      />
+
+      <div className="max-w-7xl mx-auto">
         {/* Floating whale toast */}
         {toast && (
-          <div className="whale-toast fade-in">
-            <div className="title">{toast.whaleType} ALERT • {toast.type}</div>
-            <div className="sub">{Number(toast.quantity).toFixed(4)} BTC @ ${Number(toast.price).toLocaleString()} • {toast.time}</div>
+          <div className="fixed right-6 top-20 z-[60] rounded-xl ring-1 ring-red-500/40 bg-white/95 dark:bg-slate-900/95 p-4 px-5 shadow-toast backdrop-blur-md animate-fade-in">
+            <div className="flex items-center gap-2 text-base font-bold text-red-500 dark:text-red-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              {toast.whaleType} ALERT • {toast.type}
+            </div>
+            <div className="text-xs text-slate-500 dark:text-gray-400 mt-1">{Number(toast.quantity).toFixed(4)} {toast.pair ? (splitPairSymbol(toast.pair)?.base ?? toast.pair) : 'COIN'} @ ${Number(toast.price).toLocaleString()} • {toast.time}</div>
           </div>
         )}
 
         <StatsPanel currentPrice={currentPrice} stats={{...stats, vwap}} dataPoints={priceHistory.length} />
 
-        <div className="flex items-center gap-4 mb-6 bg-slate-900 rounded-xl p-4">
-          <div className="text-sm text-gray-300">Coin A:</div>
-          <select value={coinA || ''} onChange={e => setCoinA(e.target.value)} className="bg-slate-800 p-2 rounded text-sm">
-            {tokens.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <div className="text-sm text-gray-300">Coin B:</div>
-          <select value={coinB || ''} onChange={e => setCoinB(e.target.value)} className="bg-slate-800 p-2 rounded text-sm">
-            {tokens.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <div className="text-sm text-gray-300 ml-4">Timeframe:</div>
-          <select value={timeframe} onChange={e => setTimeframe(e.target.value)} className="bg-slate-800 p-2 rounded text-sm">
-            <option value="5m">5m</option>
-            <option value="15m">15m</option>
-            <option value="1h">1h</option>
-            <option value="4h">4h</option>
-          </select>
-          <div className="ml-auto text-sm text-gray-400">
-            Msgs/s: <span className="font-bold">{messagesPerSec}</span> • Latency: <span className="font-bold">{latencyMs ? `${latencyMs}ms` : '—'}</span>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 mb-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <label className="flex items-center gap-2 text-sm text-slate-500 dark:text-gray-400">
+            Pair
+            <select value={coinA || ''} onChange={e => setCoinA(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-1.5 rounded-lg text-sm text-slate-900 dark:text-white">
+              {tokens.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <span className="text-slate-400 dark:text-gray-600">/</span>
+            <select value={coinB || ''} onChange={e => setCoinB(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-1.5 rounded-lg text-sm text-slate-900 dark:text-white">
+              {validCoinBOptions.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <InfoTip text="The trading pair to chart and filter trades/alerts by. Coin B options update based on which streams are live for the selected Coin A." />
+            {!isPairValid && coinA && coinB && (
+              <span className="text-xs font-medium text-amber-600 dark:text-amber-400">⚠ No live stream</span>
+            )}
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-500 dark:text-gray-400">
+            Timeframe
+            <select value={timeframe} onChange={e => setTimeframe(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-1.5 rounded-lg text-sm text-slate-900 dark:text-white">
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+            </select>
+            <InfoTip text="Window used to compute VWAP and accumulation/distribution stats below the chart." />
+          </label>
+          <div className="ml-auto">
+            <PerfPanel messagesPerSec={messagesPerSec} latencyMs={latencyMs} startTs={startedAt.current} />
           </div>
         </div>
 
-        <div className="flex items-center gap-4 mb-6 bg-slate-900 rounded-xl p-4">
-          <div className="text-sm font-medium text-gray-300">Detection Window:</div>
-          <input 
-            type="range" 
-            min="1000" 
-            max="60000" 
-            step="500" 
+        <div className="flex items-center gap-4 mb-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <div className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-gray-400 shrink-0">
+            Aggregation window (ms)
+            <InfoTip text="How long trades are grouped together before their combined value is checked against the whale thresholds. Longer windows catch slow accumulation but raise fewer, later alerts." />
+          </div>
+          <input
+            type="range"
+            min="1000"
+            max="60000"
+            step="500"
             value={detectionWindow.windowMs || 5000}
             onChange={e => updateDetectionWindow({ windowMs: Number(e.target.value) })}
-            className="flex-1"
-            title="Time window for aggregating trades"
+            className="flex-1 accent-cyan-500"
+            title="Aggregation window in milliseconds: how long trades are grouped before checking the combined value against whale thresholds"
           />
-          <div className="text-sm text-gray-300 min-w-fit">
+          <div className="text-sm text-slate-700 dark:text-gray-300 min-w-fit">
             <span className="font-bold">{((detectionWindow.windowMs || 5000) / 1000).toFixed(1)}s</span>
           </div>
-          <span className="text-xs text-gray-500 ml-2">Longer = fewer false alerts</span>
+          <span className="text-xs text-slate-400 dark:text-gray-500 hidden sm:inline">Longer = fewer false alerts</span>
         </div>
 
-        <PriceChart priceHistory={aggregatedSeries.length ? aggregatedSeries : priceHistory} vwap={vwap} />
+        <PriceChart priceHistory={aggregatedSeries.length ? aggregatedSeries : priceHistory} vwap={vwap} darkMode={darkMode} label={coinA && coinB ? `${coinA}/${coinB}` : 'Price'} isPairValid={isPairValid} />
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <ThresholdsPanel thresholds={thresholds || {}} onThresholdChange={updateThresholds} />
-          <div className="bg-slate-900 rounded-xl p-4">
-            <div className="text-sm text-gray-400">Accum/Dist</div>
-            <div className="mt-2 text-xs space-y-1">
-              <div>Buy: ${ad.buyVol.toFixed(0)}</div>
-              <div>Sell: ${ad.sellVol.toFixed(0)}</div>
-              <div>Net: ${ad.net.toFixed(0)}</div>
+
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+            <div className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-gray-400">
+              Accum/Dist
+              <InfoTip text="Accumulation/Distribution: total buy volume vs. sell volume (in quote currency) over the selected timeframe. A positive net means more buying pressure." />
+            </div>
+            <div className="mt-3 text-xs space-y-1.5">
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-gray-500">Buy</span><span className="text-emerald-600 dark:text-emerald-400 font-medium">${ad.buyVol.toFixed(0)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-gray-500">Sell</span><span className="text-red-600 dark:text-red-400 font-medium">${ad.sellVol.toFixed(0)}</span></div>
+              <div className="flex justify-between pt-1.5 border-t border-slate-200 dark:border-slate-800"><span className="text-slate-500 dark:text-gray-500">Net</span><span className="font-semibold">${ad.net.toFixed(0)}</span></div>
             </div>
           </div>
-          <div className="bg-slate-900 rounded-xl p-4">
-            <div className="text-sm text-gray-400">Actions</div>
-            <div className="mt-2 space-y-2">
+
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+            <div className="text-sm text-slate-500 dark:text-gray-400">Actions</div>
+            <div className="mt-3 space-y-2">
               <button onClick={() => {
                 const price = (thresholds && thresholds.WHALE) ? thresholds.WHALE : 10000
                 const payload = { price, quantity: 1, type: 'BUY' }
@@ -315,79 +333,55 @@ function App() {
                 } else {
                   fetch('/api/test-whale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
                 }
-              }} className="w-full px-3 py-1 text-xs bg-pink-600 rounded hover:bg-pink-500">Test Alert</button>
+              }} title="Ask the backend to emit a real whale alert through the websocket, as if a live trade had crossed the WHALE threshold" className="w-full px-3 py-1.5 text-xs font-medium bg-pink-600 rounded-lg hover:bg-pink-500 transition-colors text-white">Test Alert</button>
               <button onClick={() => {
                 const price = (thresholds && thresholds.WHALE) ? thresholds.WHALE : 10000
                 const tq = { price, quantity: 1, value: price, timestamp: Date.now(), type: 'BUY', whaleType: 'WHALE', time: new Date().toLocaleTimeString(), id: `local-${Date.now()}` }
                 setWhaleAlerts(prev => [tq, ...prev].slice(0,200))
                 setToast(tq)
                 setTimeout(()=>setToast(null), 6000)
-              }} className="w-full px-3 py-1 text-xs bg-gray-700 rounded hover:bg-gray-600">Toast</button>
+              }} title="Show a local-only toast notification without involving the backend, useful for testing the UI alone" className="w-full px-3 py-1.5 text-xs font-medium bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors">Toast</button>
             </div>
           </div>
-          <div className="bg-slate-900 rounded-xl p-4">
-            <div className="text-sm text-gray-400">Export</div>
-            <div className="mt-2 space-y-2">
-              <button onClick={downloadCSV} className="w-full px-3 py-1 text-xs bg-blue-600 rounded hover:bg-blue-500">CSV</button>
-              <button onClick={() => setWhaleAlerts([])} className="w-full px-3 py-1 text-xs bg-gray-700 rounded hover:bg-gray-600">Clear</button>
+
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+            <div className="text-sm text-slate-500 dark:text-gray-400">Export</div>
+            <div className="mt-3 space-y-2">
+              <button onClick={downloadCSV} title="Download all currently tracked whale alerts as a CSV file" className="w-full px-3 py-1.5 text-xs font-medium bg-cyan-600 rounded-lg hover:bg-cyan-500 transition-colors text-white">CSV</button>
+              <button onClick={() => setWhaleAlerts([])} title="Clear the whale alert history shown on this page (does not affect the backend)" className="w-full px-3 py-1.5 text-xs font-medium bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors">Clear</button>
             </div>
           </div>
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">
-            <div className="md:col-span-2">
-              <TradesFeed trades={trades} limit={80} coinA={coinA} coinB={coinB} />
+          <div className="md:col-span-2 space-y-6">
+            <TradesFeed trades={trades} limit={80} coinA={coinA} coinB={coinB} />
 
-              <div className="bg-slate-800 rounded-xl p-6">
-                <h2 className="text-xl mb-4">🚨 Whale Alerts</h2>
-                {whaleAlerts.length === 0 ? (
-                  <p className="text-gray-400 text-center py-8">Monitoring for whales...</p>
-                ) : (
-                  <div className="space-y-3 max-h-56 overflow-y-auto">
-                    {(() => {
-                      if (!coinA || !coinB) return whaleAlerts.map(w => <WhaleAlert key={w.id} whale={w} />)
-                      const filtered = filterByPair(whaleAlerts, coinA, coinB)
-                      return filtered.map(w => (
-                        <WhaleAlert key={w.id} whale={w} />
-                      ))
-                    })()}
-                  </div>
-                )}
-              </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6">
+              <h2 className="text-lg font-semibold mb-4">🚨 Whale Alerts</h2>
+              {whaleAlerts.length === 0 ? (
+                <p className="text-slate-500 dark:text-gray-500 text-sm text-center py-8">Monitoring for whales...</p>
+              ) : (
+                <div className="space-y-3 max-h-56 overflow-y-auto">
+                  {(() => {
+                    if (!coinA || !coinB) return whaleAlerts.map(w => <WhaleAlert key={w.id} whale={w} />)
+                    const filtered = filterByPair(whaleAlerts, coinA, coinB)
+                    return filtered.map(w => (
+                      <WhaleAlert key={w.id} whale={w} />
+                    ))
+                  })()}
+                </div>
+              )}
             </div>
+          </div>
 
-          <div className="bg-slate-800 rounded-xl p-6">
-            <h2 className="text-xl mb-4">🏆 Leaderboard</h2>
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6">
+            <h2 className="text-lg font-semibold mb-4">🏆 Leaderboard</h2>
             <Leaderboard whales={whaleAlerts} limit={10} />
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
 
-function StatCard({ title, value }) {
-  return (
-    <div className="bg-slate-900 rounded-xl p-4">
-      <p className="text-gray-400 text-sm">{title}</p>
-      <p className="text-2xl font-bold mt-2">{value}</p>
-    </div>
-  )
-}
-
-function WhaleCard({ whale }) {
-  const emoji = whale.whaleType === 'MEGALODON' ? '🦈' : whale.whaleType === 'WHALE' ? '🐋' : '🐬'
-  return (
-    <div className={`p-3 rounded-lg border ${whale.whaleType === 'MEGALODON' ? 'border-red-500' : 'border-orange-500'} bg-[#071028]`}> 
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <div className="text-3xl">{emoji}</div>
-          <div>
-            <div className="text-lg font-bold">${Number(whale.value).toLocaleString()}</div>
-            <div className="text-sm text-gray-400">{Number(whale.quantity).toFixed(4)} BTC @ ${Number(whale.price).toLocaleString()}</div>
-          </div>
-        </div>
-        <div className={`${whale.type === 'BUY' ? 'bg-green-600' : 'bg-red-600'} px-3 py-1 rounded`}>{whale.type}</div>
+        <Footer />
       </div>
     </div>
   )

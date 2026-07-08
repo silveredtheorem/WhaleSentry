@@ -24,6 +24,7 @@ pnpm-debug.log*
 .env
 .env.*
 .env.local
+!.env.example
 
 # Editor directories
 .vscode/
@@ -38,3 +39,12 @@ pnpm-debug.log*
 # Archives
 *.tgz
 *.zip
+
+# SQLite database (runtime data, not source)
+*.db
+*.db-shm
+*.db-wal
+
+# Python virtualenvs
+.venv/
+**/.venv/

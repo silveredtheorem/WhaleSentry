@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import InfoTip from './InfoTip'
 
 export default function PerfPanel({ messagesPerSec, latencyMs, startTs }) {
   const [uptime, setUptime] = useState('0s')
@@ -14,12 +15,20 @@ export default function PerfPanel({ messagesPerSec, latencyMs, startTs }) {
   }, [startTs])
 
   return (
-    <div className="bg-slate-900 rounded-xl p-4">
-      <p className="text-gray-400 text-sm">Performance</p>
-      <div className="mt-2 flex gap-4 text-sm">
-        <div><span className="font-semibold">Msgs/s:</span> {messagesPerSec}</div>
-        <div><span className="font-semibold">Latency:</span> {latencyMs ? `${latencyMs}ms` : '—'}</div>
-        <div><span className="font-semibold">Uptime:</span> {uptime}</div>
+    <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-gray-400">
+      <div className="flex items-center gap-1">
+        Msgs/s <span className="font-bold text-slate-900 dark:text-white tabular-nums">{messagesPerSec}</span>
+        <InfoTip text="Trade messages received from the backend over the last second, across all subscribed pairs." />
+      </div>
+      <div className="w-px h-4 bg-slate-300 dark:bg-slate-700" />
+      <div className="flex items-center gap-1">
+        Latency <span className="font-bold text-slate-900 dark:text-white tabular-nums">{latencyMs ? `${latencyMs}ms` : '—'}</span>
+        <InfoTip text="Round-trip time of a websocket ping/pong to the backend, in milliseconds." />
+      </div>
+      <div className="w-px h-4 bg-slate-300 dark:bg-slate-700" />
+      <div className="flex items-center gap-1">
+        Uptime <span className="font-bold text-slate-900 dark:text-white tabular-nums">{uptime}</span>
+        <InfoTip text="How long this browser tab has been connected, not the backend's uptime." />
       </div>
     </div>
   )

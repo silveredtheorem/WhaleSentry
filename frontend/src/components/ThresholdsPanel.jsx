@@ -1,5 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { formatUSD } from '../utils/formatters'
+import InfoTip from './InfoTip'
+
+const HELP_TEXT = {
+  DOLPHIN: 'Minimum trade value (USD) to be flagged as a small "Dolphin" alert.',
+  WHALE: 'Minimum trade value (USD) to be flagged as a "Whale" alert.',
+  MEGALODON: 'Minimum trade value (USD) to be flagged as the largest "Megalodon" alert.'
+}
 
 export default function ThresholdsPanel({ thresholds = {}, onThresholdChange }) {
   const [local, setLocal] = useState({
@@ -21,16 +28,28 @@ export default function ThresholdsPanel({ thresholds = {}, onThresholdChange }) 
   }
 
   return (
-    <div className="bg-gradient-to-br from-[#071028] to-[#081428] rounded-xl p-4 glow-border">
-      <h3 className="text-lg mb-3">Thresholds</h3>
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-glow">
+      <h3 className="text-sm text-slate-500 dark:text-gray-400 mb-3">Thresholds (USD)</h3>
       <div className="space-y-4">
         {['DOLPHIN','WHALE','MEGALODON'].map(key => (
-          <div key={key} className="">
+          <div key={key}>
             <div className="flex items-center justify-between mb-1">
-              <div className="text-sm font-medium">{key}</div>
-              <div className="text-sm text-gray-300">{formatUSD(local[key])}</div>
+              <div className="flex items-center gap-1.5 text-sm font-medium">
+                {key}
+                <InfoTip text={HELP_TEXT[key]} />
+              </div>
+              <div className="text-sm text-slate-600 dark:text-gray-300 tabular-nums">{formatUSD(local[key])}</div>
             </div>
-            <input type="range" min="100" max="1000000" step="100" value={local[key]} onChange={e => updateThreshold(key, e.target.value)} className="w-full" />
+            <input
+              type="range"
+              min="100"
+              max="1000000"
+              step="100"
+              value={local[key]}
+              onChange={e => updateThreshold(key, e.target.value)}
+              title={HELP_TEXT[key]}
+              className="w-full accent-cyan-500"
+            />
           </div>
         ))}
       </div>

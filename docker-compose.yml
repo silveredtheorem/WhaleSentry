@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    environment:
+      - ENABLE_DB=true
+      - DB_PATH=/data/whales.db
+      - AGG_WINDOW_MS=5000
+      - ROLLING_WINDOW_SIZE=500
+      - Z_SCORE_CUTOFF=3.0
+    volumes:
+      - whale_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_BACKEND_URL=http://localhost:3000
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  whale_data:
