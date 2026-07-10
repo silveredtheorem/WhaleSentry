@@ -28,32 +28,39 @@ function classifyByZScore(value, z) {
   return null
 }
 
-// Returns { whaleType, zScore, imbalance } or null.
-// Requires elevated z-score AND book imbalanced in the same direction as the trade.
-// A BUY into ask-heavy book is likely arbitrage; a BUY into bid-heavy book suggests
-// informed accumulation — that's the distinction this filter captures.
-function classifyComposite(value, z, imbalance, tradeType) {
-  if (z === null || imbalance === null) return null
+// Returns { whaleType, zScore, imbalance, signals } or null.
+// Fires when EITHER signal crosses its own threshold — z-score vs. this
+// symbol's rolling distribution, or order book imbalance vs. IMBALANCE_THRESHOLD.
+// `signals` lists which of ['zscore', 'imbalance'] actually fired, so callers
+// (and the emitted alert payload) can tell whales apart from book-pressure-only
+// events without re-deriving the thresholds.
+function classifyComposite(value, z, imbalance) {
   if (value < WHALE_THRESHOLDS.DOLPHIN) return null
 
   const cutoff      = getZCutoff()
   const imbalThresh = getImbalanceThreshold()
 
-  if (z < cutoff) return null
+  const zFired      = z !== null && z >= cutoff
+  const imbalFired  = imbalance !== null && Math.abs(imbalance) >= imbalThresh
 
-  const isBuy = String(tradeType).toUpperCase() === 'BUY'
-  const directionAligned =
-    (isBuy  && imbalance >=  imbalThresh) ||
-    (!isBuy && imbalance <= -imbalThresh)
+  if (!zFired && !imbalFired) return null
 
-  if (!directionAligned) return null
+  const signals = []
+  if (zFired)     signals.push('zscore')
+  if (imbalFired) signals.push('imbalance')
 
+  // Tier by z-score severity when it fired; fall back to the static dollar
+  // tier when the trade only tripped the imbalance signal.
   let whaleType
-  if      (z >= cutoff * 2.5) whaleType = 'MEGALODON'
-  else if (z >= cutoff * 1.5) whaleType = 'WHALE'
-  else                        whaleType = 'DOLPHIN'
+  if (zFired) {
+    if      (z >= cutoff * 2.5) whaleType = 'MEGALODON'
+    else if (z >= cutoff * 1.5) whaleType = 'WHALE'
+    else                        whaleType = 'DOLPHIN'
+  } else {
+    whaleType = classify(value) || 'DOLPHIN'
+  }
 
-  return { whaleType, zScore: z, imbalance }
+  return { whaleType, zScore: z, imbalance, signals }
 }
 
 module.exports = { WHALE_THRESHOLDS, classify, classifyByZScore, classifyComposite }

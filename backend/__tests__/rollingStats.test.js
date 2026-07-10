@@ -138,6 +138,53 @@ test('std is numerically stable for large values (no catastrophic cancellation)'
   expect(r.mean).toBeCloseTo(base, 0)
 })
 
+// ─── Agreement with a naive implementation ──────────────────────────────────
+
+// Naive two-pass sample variance: E[(x-mean)^2] computed directly from the
+// full array, recomputed from scratch on every call (O(n) per update, no
+// running state). Used only as a reference oracle for these tests — this is
+// exactly the approach Welford's avoids in production.
+function naiveStats(arr) {
+  const n = arr.length
+  const mean = arr.reduce((s, x) => s + x, 0) / n
+  const variance = n > 1
+    ? arr.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1)
+    : 0
+  return { mean, std: Math.sqrt(variance), n }
+}
+
+test('Welford result agrees with naive two-pass computation within float tolerance', () => {
+  const values = [5, 12.5, -3, 100, 42.42, 7, -8.8, 0, 999.999, 15, 15, 15, -250, 33.3]
+  let result
+  const seen = []
+  for (const v of values) {
+    seen.push(v)
+    result = stats.update(PAIR, v)
+  }
+  const naive = naiveStats(seen)
+  expect(result.mean).toBeCloseTo(naive.mean, 9)
+  expect(result.std).toBeCloseTo(naive.std, 9)
+  expect(result.n).toBe(naive.n)
+})
+
+test('Welford result agrees with naive computation over a long random-ish stream', () => {
+  const values = []
+  let x = 1
+  for (let i = 0; i < 2000; i++) {
+    // deterministic pseudo-random-ish sequence, no external RNG needed
+    x = (x * 1103515245 + 12345) % 2147483648
+    values.push((x % 100000) / 137)
+  }
+  let result
+  for (const v of values) result = stats.update(PAIR, v)
+  // Only the last WINDOW_SIZE values remain in the rolling window.
+  const windowSize = stats.getWindowSize()
+  const windowed = values.slice(-windowSize)
+  const naive = naiveStats(windowed)
+  expect(result.mean).toBeCloseTo(naive.mean, 6)
+  expect(result.std).toBeCloseTo(naive.std, 6)
+})
+
 // ─── Per-symbol isolation ────────────────────────────────────────────────────
 
 test('different symbols maintain independent state', () => {

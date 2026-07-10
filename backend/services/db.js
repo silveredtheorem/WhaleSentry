@@ -21,12 +21,14 @@ if (ENABLE_DB) {
         totalValue REAL,
         zScore REAL,
         detectionMethod TEXT,
-        imbalance REAL
+        imbalance REAL,
+        signals TEXT
       )`)
       // Migrate existing DB if columns are missing (idempotent ALTER TABLE)
       db.run(`ALTER TABLE whales ADD COLUMN zScore REAL`, () => {})
       db.run(`ALTER TABLE whales ADD COLUMN detectionMethod TEXT`, () => {})
       db.run(`ALTER TABLE whales ADD COLUMN imbalance REAL`, () => {})
+      db.run(`ALTER TABLE whales ADD COLUMN signals TEXT`, () => {})
     })
     console.log('✅ SQLite DB initialized at', dbPath)
   } catch (err) {
@@ -64,8 +66,8 @@ function insertWhale(obj) {
 function insertWhalesBatch(arr) {
   if (!db || !arr || !arr.length) return Promise.resolve(false)
   return new Promise((resolve, reject) => {
-    const placeholders = arr.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')
-    const sql = `INSERT OR REPLACE INTO whales (id,pair,price,quantity,value,type,whaleType,timestamp,tradeCount,totalValue,zScore,detectionMethod,imbalance) VALUES ${placeholders}`
+    const placeholders = arr.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')
+    const sql = `INSERT OR REPLACE INTO whales (id,pair,price,quantity,value,type,whaleType,timestamp,tradeCount,totalValue,zScore,detectionMethod,imbalance,signals) VALUES ${placeholders}`
     const params = []
     arr.forEach(obj => {
       params.push(
@@ -81,7 +83,8 @@ function insertWhalesBatch(arr) {
         obj.totalValue || obj.value || 0,
         obj.zScore ?? null,
         obj.detectionMethod || null,
-        obj.imbalance ?? null
+        obj.imbalance ?? null,
+        obj.signals ? JSON.stringify(obj.signals) : null
       )
     })
     db.run(sql, params, function (err) {

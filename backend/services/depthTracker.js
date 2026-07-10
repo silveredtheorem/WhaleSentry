@@ -1,7 +1,7 @@
 // Per-symbol order book imbalance tracker.
 //
-// Subscribes (externally) to Binance @depth5 snapshots and maintains the most
-// recent top-N bid/ask state per symbol.  The imbalance ratio is:
+// Subscribes (externally) to Binance partial-depth snapshots and maintains
+// the most recent top-N bid/ask state per symbol.  The imbalance ratio is:
 //
 //   imbalance = (bidVol - askVol) / (bidVol + askVol)
 //
@@ -10,22 +10,26 @@
 //    0  → balanced book
 //   -1  → pure ask pressure (strong selling interest)
 //
-// We use @depth5 (top-5 levels only) because:
+// We use Binance's partial-depth snapshot streams (@depth5/@depth10/@depth20)
+// rather than the full incremental diff-depth stream because:
 //   - lower bandwidth than full-depth stream
-//   - levels beyond 5 are rarely walked in a single whale trade anyway
 //   - the snapshot format is simpler than the incremental diff format
+// binanceStream.js picks the smallest Binance-supported level (5/10/20) that
+// covers DEPTH_LEVELS; updateDepth() below then slices to exactly the top N
+// requested here, so the aggregation depth isn't tied to Binance's fixed tiers.
 //
-// IMBALANCE_LEVELS is configurable; set DEPTH_LEVELS env var to override.
+// DEPTH_LEVELS (N) is configurable; set the DEPTH_LEVELS env var to override
+// (default 10).
 // IMBALANCE_THRESHOLD is the minimum |imbalance| required for the composite
 // signal — below this the book is considered "neutral".
 
-const DEPTH_LEVELS          = Number(process.env.DEPTH_LEVELS)         || 5
+const DEPTH_LEVELS          = Number(process.env.DEPTH_LEVELS)         || 10
 const IMBALANCE_THRESHOLD   = Number(process.env.IMBALANCE_THRESHOLD)  || 0.2
 
 // per-symbol: { imbalance, bidVol, askVol, lastUpdate }
 const bookState = {}
 
-// Called from the WS message handler every time a @depth5 snapshot arrives.
+// Called from the WS message handler every time a depth snapshot arrives.
 // bids/asks are arrays of [priceStr, qtyStr] from Binance.
 function updateDepth(pair, bids, asks) {
   const topBids = (bids || []).slice(0, DEPTH_LEVELS)

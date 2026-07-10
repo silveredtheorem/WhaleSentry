@@ -38,12 +38,18 @@ describe('updateDepth / getImbalance', () => {
   })
 
   test('only first DEPTH_LEVELS levels are used', () => {
-    // 5 bid levels all '1', 10 ask levels all '1' — only top 5 each counted
-    const bids = Array.from({ length: 10 }, (_, i) => [`${50000 - i}`, '1'])
-    const asks = Array.from({ length: 10 }, (_, i) => [`${50001 + i}`, '1'])
+    const N = getDepthLevels()
+    // N bid levels all '1', 2x asks all '1' but only the top N of each count.
+    // Equal per-level volume on both sides keeps the imbalance at 0 regardless
+    // of N, while proving levels beyond N are ignored.
+    const bids = Array.from({ length: N * 2 }, (_, i) => [`${50000 - i}`, '1'])
+    const asks = Array.from({ length: N * 2 }, (_, i) => [`${50001 + i}`, '1'])
     updateDepth('btcusdt_e', bids, asks)
-    // top-5 bid vol = 5, top-5 ask vol = 5 → imbalance = 0
     expect(getImbalance('btcusdt_e')).toBeCloseTo(0)
+  })
+
+  test('default DEPTH_LEVELS is 10', () => {
+    expect(getDepthLevels()).toBe(10)
   })
 
   test('returns null when snapshot is stale (> 10s)', () => {

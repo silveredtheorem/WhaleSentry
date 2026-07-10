@@ -1,9 +1,19 @@
 const WebSocket = require('ws')
 const { classify, classifyByZScore, classifyComposite } = require('./whaleDetector')
 const { update: updateStats, zScore } = require('./rollingStats')
-const { updateDepth, getImbalance } = require('./depthTracker')
+const { updateDepth, getImbalance, getDepthLevels } = require('./depthTracker')
 const { insertWhalesBatch } = require('./db')
 const { TradeQueue } = require('./tradeQueue')
+
+// Binance's partial-depth snapshot stream only ships fixed tiers (5/10/20
+// levels). Pick the smallest tier that covers DEPTH_LEVELS — depthTracker's
+// updateDepth() slices down to the exact N requested, so this just controls
+// how much raw data comes over the wire.
+function _depthStreamName(pair) {
+  const n = getDepthLevels()
+  const tier = n <= 5 ? 5 : n <= 10 ? 10 : 20
+  return `${pair}@depth${tier}`
+}
 
 let WINDOW_MS = Number(process.env.AGG_WINDOW_MS) || 5000
 const MIN_EMIT_GAP_MS    = Number(process.env.MIN_EMIT_GAP_MS)            || 5000
@@ -85,15 +95,16 @@ function startConsumer(io, recentTrades, MAX_HISTORY) {
         whaleBatch.push(alert)
       }
 
-      // --- composite signal (z-score + order book imbalance direction check) ---
+      // --- composite signal (fires if EITHER z-score OR book imbalance crosses its threshold) ---
       const imbalance = getImbalance(pair)
-      const composite = classifyComposite(value, z, imbalance, type)
+      const composite = classifyComposite(value, z, imbalance)
       if (composite) {
         const alert = {
           ...tradeData,
           whaleType: composite.whaleType,
           zScore: composite.zScore,
           imbalance: composite.imbalance,
+          signals: composite.signals,
           detectionMethod: 'composite',
           id: `${timestamp}-c-${Math.random()}`
         }
@@ -160,10 +171,11 @@ function connect(io, recentTrades, MAX_HISTORY, pairs = ['btcusdt']) {
 
   function _connect() {
     const tradeStreams = list.map(p => `${p}@trade`)
-    const depthStreams = list.map(p => `${p}@depth5`)
-    const url = list.length > 1
-      ? `wss://stream.binance.com:9443/stream?streams=${[...tradeStreams, ...depthStreams].join('/')}`
-      : `wss://stream.binance.com:9443/ws/${list[0]}@trade`
+    const depthStreams = list.map(p => _depthStreamName(p))
+    // Always use the combined-stream endpoint, even for a single pair — the
+    // single-stream endpoint (`/ws/<pair>@trade`) carries trades only, which
+    // left the order book imbalance signal permanently null in single-pair mode.
+    const url = `wss://stream.binance.com:9443/stream?streams=${[...tradeStreams, ...depthStreams].join('/')}`
 
     const ws = new WebSocket(url)
 
@@ -193,7 +205,7 @@ function connect(io, recentTrades, MAX_HISTORY, pairs = ['btcusdt']) {
             timestamp: payload.T,
             type: payload.m ? 'SELL' : 'BUY'
           })
-        } else if (streamType === 'depth5') {
+        } else if (streamType && streamType.startsWith('depth')) {
           updateDepth(pair, payload.bids, payload.asks)
         }
       } catch (err) {
